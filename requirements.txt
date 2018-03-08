@@ -1,5 +1,6 @@
 asn1crypto==0.23.0
 bleach==2.1.2
+bunch==1.0.1
 certifi==2018.1.18
 cffi==1.11.2
 chardet==3.0.4
@@ -9,6 +10,7 @@ cycler==0.10.0
 decorator==4.2.1
 entrypoints==0.2.3
 geopy==1.11.0
+graphviz==0.8.2
 h5py==2.7.1
 html5lib==1.0.1
 hyperdash==0.15.2
@@ -44,6 +46,7 @@ protobuf==3.4.1
 ptyprocess==0.5.2
 pycosat==0.6.3
 pycparser==2.18
+pydot==1.2.4
 Pygments==2.2.0
 pyOpenSSL==17.5.0
 pyparsing==2.2.0
