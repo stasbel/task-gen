@@ -95,9 +95,16 @@ class NLTKExtractor(Extractor):
         return accepted
 
 
+def norm(tags):
+    def norm(tag):
+        return '-'.join(tag.lower().split())
+    
+    return ' '.join(sorted(norm(tag) for tag in tags))
+
+
 class RakeExtractor(Extractor):
     def __init__(self):
         self.r = Rake()
 
     def __call__(self, text):
-        return self.r.
+        return self.r.get_ranked_phrases(text)
