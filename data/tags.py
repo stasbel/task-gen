@@ -33,6 +33,7 @@ import nltk
 from nltk.corpus import stopwords
 
 from rake_nltk import Rake
+from lazy import lazy
 
 
 class Extractor(abc.ABC):
@@ -95,11 +96,21 @@ class NLTKExtractor(Extractor):
         return accepted
 
 
-def norm(tags):
-    def norm(tag):
-        return '-'.join(tag.lower().split())
-    
-    return ' '.join(sorted(norm(tag) for tag in tags))
+class Tags:
+    def __init__(self, raw_tags):
+        self.raw_tags = raw_tags
+
+    @lazy
+    def is_valid(self):
+        def is_valid(tag):
+            pass
+
+    @lazy
+    def norm(self):
+        def norm(tag):
+            return '-'.join(tag.lower().split())
+
+        return ' '.join(sorted(norm(tag) for tag in self.raw_tags))
 
 
 class RakeExtractor(Extractor):
