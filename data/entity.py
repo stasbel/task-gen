@@ -1,6 +1,8 @@
 import abc
+import re
 from typing import List
 
+import pandas as pd
 import validator
 from lazy import lazy
 
@@ -30,11 +32,12 @@ class Text(Entity):
 
     @lazy
     def is_valid(self):
-        return text_validator(self.raw) and self.norm
+        return bool(text_validator(self.raw) and self.norm)
 
     @lazy
     def norm(self) -> str:
-        return self.raw.strip().replace('\n', ' DCNL ').strip()
+        text = re.sub('\n\n', '\n', self.raw)
+        return text.strip().replace('\n', ' DCNL ').strip()
 
 
 class Tag(Entity):
@@ -45,21 +48,32 @@ class Tag(Entity):
 
     @lazy
     def is_valid(self):
-        return tag_validator(self.raw) and self.norm
+        return bool(tag_validator(self.raw) and self.norm)
 
     @lazy
     def norm(self):
         return '-'.join(self.raw.strip().lower().split())
 
 
-ENTITIES = [
-    ('text', Text),
-    ('tags', Tags)
-]
-
-
 def collect(raw):
-    keys = set(n for n, _ in ENTITIES)
-    data = {k: [] for k in keys}
+    def linearize_tags(raw_tags):
+        tags = [Tag(raw_tag) for raw_tag in raw_tags]
+        stags = sorted(tag.norm for tag in tags if tag.is_valid)
+        return ' '.join(stags) or None
+
+    data = {'text': [], 'tags': []}
+
     for i_raw in raw:
-        pass
+        if 'text' not in i_raw:
+            continue
+
+        text = Text(i_raw['text'])
+        if not text.is_valid:
+            continue
+
+        lin_tags = linearize_tags(i_raw['tags'] if 'tags' in i_raw else [])
+
+        data['text'].append(text.norm)
+        data['tags'].append(lin_tags)
+
+    return pd.DataFrame.from_dict(data)[['text', 'tags']].fillna('NaN')

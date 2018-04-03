@@ -64,7 +64,7 @@ class Chars(Validator):
 
     GOOD_CHARS = ALPHAS
 
-    def __init__(self, arate: float = 0.75):
+    def __init__(self, arate: float):
         assert 0 <= arate <= 1, "Sanity check"
 
         self.arate = arate
@@ -73,7 +73,7 @@ class Chars(Validator):
         return self._is_ascii(text) and self._is_good_arate(text)
 
     def _is_ascii(self, text):
-        return all(31 < ord(c) < 128 for c in text)
+        return all(0 <= ord(c) < 128 for c in text)
 
     def _is_good_arate(self, text):
         m = sum(bool(c in self.GOOD_CHARS) for c in text)
@@ -126,7 +126,7 @@ class Substrings(Validator):
 class Text(Constructor):
     """Sensible and good text `Validator`."""
 
-    def __init__(self, bounds=(25, 3000), language='en', arate=0.75):
+    def __init__(self, bounds=(25, 3000), language='en', arate=0.65):
         super().__init__([
             Len(bounds),
             Language(language),
