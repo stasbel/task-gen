@@ -1,39 +1,17 @@
-# import spacy
-#
-# nlp = spacy.load('en')
-#
-# STOP_WORDS = {
-#     'doesn\\\'t',
-#     'it\\',
-#     'user\\',
-#     'return',
-#     ':return'
-# }
-#
-# class Validator:
-#     def __init__(self, language='en', stop_words=STOP_WORDS, ):
-#         self.nlp = spacy.load(language)
-#
-#         self.stop_words = stop_words
-#         self.good_chars = good_chars
-#
-#
-#     def __call__(self, word):
-#         pass
-#
-# def fetch_entity(text):
-#     def norm(word):
-#         return word.strip().lower()
-#
-#     return ''
-
 import abc
 
 import nltk
-from nltk.corpus import stopwords
-
-from rake_nltk import Rake
 from lazy import lazy
+from nltk.corpus import stopwords
+from rake_nltk import Rake
+
+STOP_WORDS = {
+    'doesn\\\'t',
+    'it\\',
+    'user\\',
+    'return',
+    ':return'
+}
 
 
 class Extractor(abc.ABC):
