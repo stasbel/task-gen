@@ -1,3 +1,4 @@
+import os
 import json
 from functools import wraps
 
@@ -5,15 +6,21 @@ from hyperdash import Experiment
 from tqdm import tqdm
 
 
-__all__ = ['monitor', 'monitor_apply_gen']
+__all__ = ['API_KEY_JSON_PATH', 'monitor', 'monitor_apply_gen']
+
+
+API_KEY_JSON_PATH = 'hd.json'
 
 
 def _api_key_getter():
-    return json.load(open('hd.json', 'r'))['api_key']
+    return json.load(open(API_KEY_JSON_PATH, 'r'))['api_key']
 
 
 def _new_exp(name, supress_output):
-    exp = Experiment(name, capture_io=False, api_key_getter=_api_key_getter)
+    if os.path.exists(API_KEY_JSON_PATH):
+        exp = Experiment(name, capture_io=False, api_key_getter=_api_key_getter)
+    else:
+        exp = Experiment(name, capture_io=False)
 
     # SUPER-hacky, but it's work (needed to supress hd output)
     if supress_output:
