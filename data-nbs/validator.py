@@ -4,7 +4,7 @@ from typing import List, Sequence
 
 import spacy
 from langdetect import detect as detect_lang
-from spacy_cld import LanguageDetector
+from spacy_cld.spacy_cld import detect as detect_lang2
 
 
 class Validator(abc.ABC):
@@ -38,16 +38,17 @@ class Language(Validator):
         assert language == 'en', "Only support en for now"
 
         self.language = language
-        self.nlp = spacy.load(language)
-        self.nlp.add_pipe(LanguageDetector())
 
     def __call__(self, text: str):
         return self._is_infer_lang_spacy_cld(text) \
                and self._is_infer_langdetect(text)
 
     def _is_infer_lang_spacy_cld(self, text):
-        languages = self.nlp(text)._.languages
-        return len(languages) and languages[0] == self.language
+        try:
+            languages = detect_lang2(text)[2]
+        except:
+            return False
+        return len(languages) and languages[0][1] == self.language
 
     def _is_infer_langdetect(self, text):
         try:
@@ -70,10 +71,10 @@ class Chars(Validator):
         self.arate = arate
 
     def __call__(self, text: str):
-        return self._is_ascii(text) and self._is_good_arate(text)
+        return self._is_good_arate(text)
 
-    def _is_ascii(self, text):
-        return all(0 <= ord(c) < 128 for c in text)
+#     def _is_ascii(self, text):
+#         return all(0 <= ord(c) < 128 for c in text)
 
     def _is_good_arate(self, text):
         m = sum(bool(c in self.GOOD_CHARS) for c in text)
@@ -126,7 +127,7 @@ class Substrings(Validator):
 class Text(Constructor):
     """Sensible and good text `Validator`."""
 
-    def __init__(self, bounds=(25, 3000), language='en', arate=0.65):
+    def __init__(self, bounds=(25, 3000), language='en', arate=0.7):
         super().__init__([
             Len(bounds),
             Language(language),

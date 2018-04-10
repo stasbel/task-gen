@@ -1,34 +1,21 @@
-import re
 import copy
-import warnings
-import pandas as pd
+import re
 
-from tqdm import tqdm
-from lazy import lazy
 from bs4 import BeautifulSoup
-from difflib import SequenceMatcher
-from IPython.core.display import HTML
+from utils import monitor_apply_gen
 from sklearn.base import BaseEstimator, TransformerMixin
 
 
-# Switch warning off for `bs4`.
-warnings.filterwarnings("ignore", category=UserWarning, module='bs4')
-
-
-class TextExtractor:
-    def __init__(self, raw_text, 
-                 delete_code=True, code_replacer='CODE',
-                 delete_r=True, treshold=0.9, nl_replacer='DCNL'):
-        self.raw_text = raw_text
+class HTMLPurifier:
+    def __init__(self, delete_code=True, code_replacer=' CODE ',
+                 delete_r=True, treshold=0.9):
         self.delete_code = delete_code
         self.code_replacer = code_replacer
         self.delete_r = delete_r
         self.treshold = treshold
-        self.nl_replacer = nl_replacer
 
-    @lazy
-    def text(self):
-        text = self._replace_unescape(self.raw_text)
+    def __call__(self, raw_text):
+        text = self._replace_unescape(raw_text)
         self._soup = BeautifulSoup(text, 'lxml')
 
         self._codes = []
@@ -37,13 +24,15 @@ class TextExtractor:
 
         text = str(new_soup.get_text())
         text = text.replace('\r', '') if self.delete_r else text
-        
-        text = text.strip().replace('\n', f' {self.nl_replacer} ')
+
         return text
-    
+
     @staticmethod
-    def _replace_unescape(text, 
-                          unescape_dict={'&lt;': '<', '&gt;': '>', '&amp;': '&'}):
+    def _replace_unescape(text,
+                          unescape_dict=None):
+        if unescape_dict is None:
+            unescape_dict = {'&lt;': '<', '&gt;': '>', '&amp;': '&'}
+
         def round_(text):
             for k, v in unescape_dict.items():
                 text = text.replace(k, v)
@@ -64,11 +53,15 @@ class TextExtractor:
 
 
 class HTMLPreprocessor(BaseEstimator, TransformerMixin):
-    def __init__(self):
-        pass
-    
+    def __init__(self, monitor=None, do_tqdm=False):
+        self.monitor = monitor
+        self.do_tqdm = do_tqdm
+
+        self.purifier = HTMLPurifier()
+
     def fit(self, X):
         return self
 
     def transform(self, X):
-        return [TextExtractor(x).text for x in tqdm(X)]
+        return list(monitor_apply_gen(self.purifier, X,
+                                      self.monitor, self.do_tqdm))
