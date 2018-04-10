@@ -10,17 +10,16 @@ I am using **python3.6** along with specific packages (cluster, spblab).
 
 ### Hyperdash
 
-In order for hyperdash to work, you will need to place your api key in [hd.json](hd.json) file, like that:
+In order for hyperdash to work, you will need to place your api key in `hd.json` file, like that:
 
-```
-{"api_key": "mB3wTK1XXivrCFp4HpnX/KDUFT/0az3+W8BhLSF+Vdg="}
+```json
+{"api_key": "<place your api key here>"}
 ```
 
 ### Notebooks
 
-1. [Preprocess](preprocess.ipynb)
-2. [Entities](entities.ipynb)
-3. ...
+1. [Data preparation notebooks](data-nbs/)
+2. ...
 
 ## License
 
