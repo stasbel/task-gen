@@ -34,10 +34,11 @@ class Len(Validator):
 class Language(Validator):
     """Sensible text in language `Validator`."""
 
-    def __init__(self, language: str = 'en'):
+    def __init__(self, language: str = 'en', score_lb: int = 1000):
         assert language == 'en', "Only support en for now"
 
         self.language = language
+        self.score_lb = score_lb
 
     def __call__(self, text: str):
         return self._is_infer_lang_spacy_cld(text) \
@@ -48,7 +49,9 @@ class Language(Validator):
             languages = detect_lang2(text)[2]
         except:
             return False
-        return len(languages) and languages[0][1] == self.language
+        return len(languages) and languages[0][1] == self.language \
+               and languages[0][2] >= 0.98 \
+               and languages[0][3] >= self.score_lb
 
     def _is_infer_langdetect(self, text):
         try:
@@ -127,7 +130,7 @@ class Substrings(Validator):
 class Text(Constructor):
     """Sensible and good text `Validator`."""
 
-    def __init__(self, bounds=(25, 3000), language='en', arate=0.7):
+    def __init__(self, bounds=(25, 1500), language='en', arate=0.7):
         super().__init__([
             Len(bounds),
             Language(language),
