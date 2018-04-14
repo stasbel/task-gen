@@ -1,4 +1,4 @@
-# task-gen
+# text-gen
 
 Task generation problem as bachelor thesis
 
