@@ -1,0 +1,48 @@
+name: text-gen
+channels:
+  - pytorch
+  - defaults
+dependencies:
+  - ca-certificates=2018.03.07=0
+  - certifi=2018.1.18=py36_0
+  - cffi=1.11.5=py36h9745a5d_0
+  - cudatoolkit=8.0=3
+  - freetype=2.8=hab7d2ae_1
+  - intel-openmp=2018.0.0=8
+  - jpeg=9b=h024ee3a_2
+  - libedit=3.1=heed3624_0
+  - libffi=3.2.1=hd88cf55_4
+  - libgcc-ng=7.2.0=hdf63c60_3
+  - libgfortran-ng=7.2.0=hdf63c60_3
+  - libpng=1.6.34=hb9fc6fc_0
+  - libstdcxx-ng=7.2.0=hdf63c60_3
+  - libtiff=4.0.9=h28f6b97_0
+  - mkl=2018.0.2=1
+  - mkl_fft=1.0.1=py36h3010b51_0
+  - mkl_random=1.0.1=py36h629b387_0
+  - ncurses=6.0=h9df7e31_2
+  - numpy=1.14.2=py36hdbf6ddf_1
+  - olefile=0.45.1=py36_0
+  - openssl=1.0.2o=h20670df_0
+  - pandas=0.22.0=py36hf484d3e_0
+  - pillow=5.0.0=py36h3deb7b8_0
+  - pip=9.0.3=py36_0
+  - pycparser=2.18=py36hf9f622e_1
+  - python=3.6.5=hc3d631a_0
+  - python-dateutil=2.7.2=py36_0
+  - pytz=2018.3=py36_0
+  - readline=7.0=ha6073c6_4
+  - setuptools=39.0.1=py36_0
+  - six=1.11.0=py36h372c433_1
+  - sqlite=3.22.0=h1bed415_0
+  - tk=8.6.7=hc745277_3
+  - wheel=0.31.0=py36_0
+  - xz=5.2.3=h55aa19d_2
+  - zlib=1.2.11=ha838bed_2
+  - cuda90=1.0=h6433d27_0
+  - pytorch=0.3.1=py36_cuda9.0.176_cudnn7.0.5_2
+  - torchvision=0.2.0=py36h17b6947_1
+  - pip:
+    - torch==0.3.1.post2
+prefix: /home/stasbel/miniconda3/envs/text-gen
+

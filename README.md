@@ -4,22 +4,26 @@ Task generation problem as bachelor thesis
 
 ## Installation
 
-I am using **python3.6** along with specific packages (cluster, spblab).
+I am using [conda](https://conda.io/docs/) as a primary tool for development.
+See [environment.yml](environment.yml) for specification of python and 
+dependency packages.  
+Basically, to reproduce enviroment, you need to run 
+`conda env create -f environment.yml`.
 
 ## Usage
 
 ### Hyperdash
 
-In order for hyperdash to work, you will need to place your api key in `hd.json` file, like that:
+In order for hyperdash to work, you will need to place your api key in `hd.json`
+ file, like that:
 
 ```json
 {"api_key": "<place your api key here>"}
 ```
 
-### Notebooks
+### Usage flow
 
-1. [Data preparation notebooks](data-nbs/)
-2. ...
+TODO: ...
 
 ## License
 
