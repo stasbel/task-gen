@@ -1,6 +1,6 @@
-import torch
 import numpy as np
-import torch.nn as nn
+import torch
+from torch import nn
 from torch.autograd import Variable
 
 
@@ -31,6 +31,20 @@ class Encoder(nn.Module):
         return mu + sigma * Variable(std, requires_grad=False)
 
 
+class DiscreteDiscriminator(nn.Module):
+    def __init__(self, max_len=15):
+        super().__init__()
+
+        self.cnn1 = nn.Sequential(
+            nn.Conv1d(max_len, 128, 5),
+            nn.ReLU(),
+            nn.MaxPool1d(3)
+        )
+
+    def forward(self, x):
+        pass
+
+
 class RNN_VAE(nn.Module):
     def __init__(self, unk_idx=0, pad_idx=1, start_idx=2, eos_idx=3,
                  max_len=15):
@@ -43,11 +57,16 @@ class RNN_VAE(nn.Module):
 
         self.max_len = max_len
 
-        self._input_linear = nn.Linear(10, 10)
-        self.middle_linear = nn.Linear(10, 10)
-        self.output_linear = nn.Linear(10, 10)
+        self.default_linear = nn.Linear(10, 10)
+        self._hide_linear = nn.Linear(20, 20)
+
+    def forward(self, input):
+        if not hasattr(self, 'linear'):
+            self.runtime_liner = nn.Linear(30, 30)
+        return input
 
 
 if __name__ == '__main__':
     model = RNN_VAE()
-    print(len(list(model.parameters())))
+    model(model(torch.zeros(10)))
+    print([p.shape for p in model.parameters()])
