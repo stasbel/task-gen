@@ -7,42 +7,60 @@ __all__ = ['SSTCorpus']
 
 
 class Corpus(abc.ABC):
+    """Handle both preprocessing and batching, also store vocabs"""
+
     @abc.abstractmethod
-    def unlabeled(self, split, batch_size):
+    def vocab(self, name):
         pass
 
     @abc.abstractmethod
-    def labeled(self, split, batch_size):
+    def make_batcher(self, mode, split, batch_size):
         pass
 
 
 class SSTCorpus(Corpus):
-    def __init__(self, n_batch=32, n_len=15, n_vocab=10000, d_emb=50):
-        self.n_batch = n_batch
-        self.n_len = n_len
-        self.n_vocab = n_vocab
-        self.d_emb = d_emb
+    def __init__(self, args, device):
+        self.n_batch = args.n_batch
+        self.n_len = args.n_len
+        self.n_vocab = args.n_vocab
+        self.d_emb = args.d_emb
+        self.device = device
 
         self._load_data()
 
-    def unlabeled(self, split='train', n_batch=None):
-        for batch in self._make_b_iter(split, n_batch):
-            yield batch.text
+    def vocab(self, name):
+        return getattr(self, name).vocab
 
-    def labeled(self, split='train', n_batch=None):
-        for batch in self._make_b_iter(split, n_batch):
-            yield batch.text, batch.label
+    def make_batcher(self, mode, split, n_batch=None, device=None):
+        n_batch = n_batch or self.n_batch
+        device = device or self.device
+        b_iter = self._make_b_iter(split, n_batch, device)
+
+        if mode == 'unlabeled':
+            for batch in b_iter:
+                if batch.batch_size == n_batch:
+                    yield batch.text
+        elif mode == 'labeled':
+            for batch in b_iter:
+                if batch.batch_size == n_batch:
+                    yield batch.text, batch.label
+        else:
+            raise ValueError(
+                "Invalid mode, should be one of the ('unlabeled', 'labeled')"
+            )
 
     def _load_data(self):
-        self.text = data.Field(
-            init_token='<start>',
+        self.X = data.ReversibleField(
+            init_token='<bos>',
             eos_token='<eos>',
             fix_length=self.n_len,
             lower=True,
-            tokenize='spacy',
+            # commented to enable reversiblity
+            # tokenize='spacy',
+            unk_token='<unk>',
             batch_first=True
         )
-        self.label = data.Field(
+        self.y = data.ReversibleField(
             sequential=False,
             unk_token=None,
             batch_first=True
@@ -52,25 +70,24 @@ class SSTCorpus(Corpus):
             return len(e.text) <= self.n_len and e.label != 'neutral'
 
         self.train, self.val, self.test = datasets.SST.splits(
-            self.text,
-            self.label,
+            self.X,
+            self.y,
             fine_grained=False,
             train_subtrees=False,
             filter_pred=filter_pred
         )
 
-        self.text.build_vocab(self.train,
-                              max_size=self.n_vocab,
-                              vectors=GloVe('6B', dim=self.d_emb))
-        self.label.build_vocab(self.train)
+        self.X.build_vocab(self.train,
+                           max_size=self.n_vocab,
+                           vectors=GloVe('6B', dim=self.d_emb))
+        self.y.build_vocab(self.train)
 
-    def _make_b_iter(self, split, n_batch):
+    def _make_b_iter(self, split, n_batch, device):
         return data.BucketIterator(
             self._choose_split(split),
-            n_batch or self.n_batch,
-            repeat=False,
+            n_batch,
             train=(split == 'train'),
-            device=-1
+            device=device
         )
 
     def _choose_split(self, split):
@@ -81,5 +98,6 @@ class SSTCorpus(Corpus):
         elif split == 'test':
             return self.test
         else:
-            raise ValueError('Invalid split, should be one of the '
-                             '(\'train\', \'val\', \'test\')')
+            raise ValueError(
+                "Invalid split, should be one of the ('train', 'val', 'test')"
+            )

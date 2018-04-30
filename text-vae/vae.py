@@ -4,13 +4,8 @@ import torch.nn.functional as F
 import torch.optim as optim
 import torchvision
 from torch import nn
-from torch.autograd import Variable
 from torchvision import transforms
 from tqdm import tqdm
-
-# os.environ['CUDA_DEVICE_ORDER'] = 'PCI_BUS_ID'
-# os.environ['CUDA_VISIBLE_DEVICES'] = '2'
-torch.cuda.set_device(2)
 
 
 class Encoder(nn.Module):
@@ -38,13 +33,14 @@ class Decoder(nn.Module):
 
 
 class VAE(nn.Module):
-    def __init__(self, encoder, decoder):
+    def __init__(self, encoder, decoder, device):
         super().__init__()
 
         self.encoder = encoder
         self.decoder = decoder
         self.enc_mu = nn.Linear(100, 8)
         self.enc_log_sigma = nn.Linear(100, 8)
+        self.device = device
 
     def forward(self, x):
         h = self.encoder(x)
@@ -56,11 +52,11 @@ class VAE(nn.Module):
 
         std = torch.from_numpy(
             np.random.normal(0, 1, size=sigma.size())
-        ).float().cuda()
+        ).float().to(self.device)
 
         self.z_mu, self.z_sigma = mu, sigma
 
-        return mu + sigma * Variable(std, requires_grad=False)
+        return mu + sigma * std
 
 
 def latent_loss(z_mu, z_sigma):
@@ -69,37 +65,43 @@ def latent_loss(z_mu, z_sigma):
 
 
 if __name__ == '__main__':
-    batch_size = 32
+    n_batch = 32
     d_input = 28 * 28
     n_epoch = 5
+    gpu = True
 
-    transform = transforms.Compose([transforms.ToTensor()])
-    mnist = torchvision.datasets.MNIST('./',
-                                       download=True, transform=transform)
-    dataloader = torch.utils.data.DataLoader(mnist, batch_size=batch_size,
-                                             shuffle=True, num_workers=2,
-                                             drop_last=True)
+    mnist = torchvision.datasets.MNIST(
+        './',
+        download=True,
+        transform=transforms.Compose([transforms.ToTensor()])
+    )
+    dataloader = torch.utils.data.DataLoader(
+        mnist,
+        batch_size=n_batch,
+        shuffle=True,
+        num_workers=2,
+        drop_last=True
+    )
 
     encoder = Encoder(d_input, 100, 100)
     decoder = Decoder(8, 100, d_input)
-    model = VAE(encoder, decoder)
-    model.cuda()
+    device = torch.device('cuda:3' if gpu else 'cpu')
+    model = VAE(encoder, decoder, device).to(device)
 
     criterion = nn.MSELoss()
     optimizer = optim.Adam(model.parameters(), lr=1e-4)
 
     for epoch in tqdm(range(n_epoch)):
-        l1_loss, l2_loss, total_loss = 0, 0, 0
+        total_loss = 0
         for i, (x, _) in enumerate(dataloader):
             # data
-            x = Variable(x.resize_(batch_size, d_input).cuda())
+            x = x.resize_(n_batch, d_input).to(device)
 
             # forward pass
             xh = model(x)
 
             # loss
-            l1, l2 = criterion(xh, x), latent_loss(model.z_mu, model.z_sigma)
-            loss = l1 + l2
+            loss = criterion(xh, x) + latent_loss(model.z_mu, model.z_sigma)
 
             # backward
             optimizer.zero_grad()
@@ -107,11 +109,7 @@ if __name__ == '__main__':
             optimizer.step()
 
             # metrics
-            l1_loss += l1.data[0]
-            l2_loss += l2.data[0]
-            total_loss += loss.data[0]
+            total_loss += loss.item()
 
-        l1_loss /= (len(dataloader) * batch_size)
-        l2_loss /= (len(dataloader) * batch_size)
-        total_loss /= (len(dataloader) * batch_size)
-        print(f'\nepoch={epoch} l1={l1_loss} l2={l2_loss} loss={total_loss}')
+        total_loss /= (len(dataloader) * n_batch)
+        print(f'\nepoch={epoch + 1} loss={total_loss}')

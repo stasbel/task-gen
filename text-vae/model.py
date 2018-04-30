@@ -5,30 +5,30 @@ from torch.autograd import Variable
 
 
 class Encoder(nn.Module):
-    def __init__(self, n_vocab, d_emb=150, dropout=0.1, d_rnn=300,
-                 n_layers=1, d_out=300):
+    def __init__(self, args):
         super().__init__()
 
-        self.emb = nn.Embedding(n_vocab, d_emb)
-        self.drop = nn.Dropout(dropout)
-        self.rnn = nn.GRU(d_emb, d_rnn, n_layers, dropout=dropout)
-        self.enc_mu = nn.Linear(d_rnn, d_out)
-        self.enc_log_sigma = nn.Linear(d_rnn, d_out)
+        self.emb = nn.Embedding(args.n_vocab, args.d_emb)
+        # self.drop = nn.Dropout(dropout)
+        # self.rnn = nn.GRU(d_emb, d_rnn, n_layers, dropout=dropout)
+        # self.enc_mu = nn.Linear(d_rnn, d_out)
+        # self.enc_log_sigma = nn.Linear(d_rnn, d_out)
 
     def forward(self, x):
         '''x: (batch_size, max_len) of longs'''
         pass
 
-    def _sample_z(self, h):
-        mu, log_sigma = self.enc_mu(h), self.enc_log_sigma(h)
-        sigma = torch.exp(log_sigma)
+    # def _sample_z(self, h):
+    #     mu, log_sigma = self.enc_mu(h), self.enc_log_sigma(h)
+    #     sigma = torch.exp(log_sigma)
+    #
+    #     std = torch.from_numpy(
+    #         np.random.normal(0, 1, size=sigma.size())
+    #     ).float()
+    #
+    #     # Reparameterization trick
+    #     return mu + sigma * Variable(std, requires_grad=False)
 
-        std = torch.from_numpy(
-            np.random.normal(0, 1, size=sigma.size())
-        ).float()
-
-        # Reparameterization trick
-        return mu + sigma * Variable(std, requires_grad=False)
 
 
 class DiscreteDiscriminator(nn.Module):
