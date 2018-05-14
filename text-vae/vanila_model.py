@@ -49,6 +49,15 @@ class RnnVae(nn.Module):
         )
         self.decoder_fc = nn.Linear(self.d_z + self.d_c, self.n_vocab)
 
+        # Discriminator
+        self.conv3 = nn.Conv2d(1, 100, (3, self.d_emb))
+        self.conv4 = nn.Conv2d(1, 100, (4, self.d_emb))
+        self.conv5 = nn.Conv2d(1, 100, (5, self.d_emb))
+        self.disc_fc = nn.Sequential(
+            nn.Dropout(0.5),
+            nn.Linear(300, self.d_c)
+        )
+
         # Grouping the model's parameters
         self.encoder = nn.ModuleList([
             self.encoder_rnn,
@@ -63,6 +72,12 @@ class RnnVae(nn.Module):
             self.x_emb,
             self.encoder,
             self.decoder
+        ])
+        self.discriminator = nn.ModuleList([
+            self.conv3,
+            self.conv4,
+            self.conv5,
+            self.disc_fc
         ])
 
     def forward(self, x):
@@ -94,20 +109,30 @@ class RnnVae(nn.Module):
 
         return kl_loss, recon_loss
 
-    def forward_encoder(self, x):
+    def forward_encoder(self, x, do_emb=True):
         """Encoder step, emulating z ~ E(x) = q_E(z|x)
 
-        :param x: (n_batch, n_len) of longs, input sentence x
+        :param x: (n_batch, n_len) of longs or (n_batch, n_len, d_emb) of
+        floats, input sentence x
+        :param do_emb: whether do embedding for x or not
         :return: (n_batch, d_z) of floats, sample of latent vector z
         :return: float, kl term component of loss
         """
 
         # Input check
-        assert_check(x, [-1, self.n_len], torch.long)
+        if do_emb:
+            assert_check(x, [-1, self.n_len], torch.long)
+        else:
+            assert_check(x, [-1, self.n_len, self.d_emb], torch.float)
 
-        # Embedding + RNN
-        x_emb = self.x_emb(x.t())  # (n_len, n_batch, d_emb)
-        _, h = self.encoder_rnn(x_emb, None)  # (1, n_batch, d_h)
+        # Emb (n_batch, n_len, d_emb)
+        if do_emb:
+            x_emb = self.x_emb(x)
+        else:
+            x_emb = x
+
+        # RNN
+        _, h = self.encoder_rnn(x_emb.t(), None)  # (1, n_batch, d_h)
 
         # Forward to latent
         h = h.squeeze()  # (n_batch, d_h)
@@ -176,6 +201,43 @@ class RnnVae(nn.Module):
         assert_check(recon_loss, [], torch.float, x.device)
 
         return recon_loss
+
+    def forward_discriminator(self, x, do_emb=True):
+        """Discriminator step, emulating c ~ D(x)
+
+        :param x: (n_batch, n_len) of longs or (n_batch, n_len, d_emb) of
+        floats, input sentence x
+        :param do_emb: whether do embedding for x or not
+        :return: (n_batch, d_c) of floats, sample of code c
+        """
+
+        # Input check
+        if do_emb:
+            assert_check(x, [-1, self.n_len], torch.long)
+        else:
+            assert_check(x, [-1, self.n_len, self.d_emb], torch.float)
+
+        # Emb (n_batch, n_len, d_emb)
+        if do_emb:
+            x_emb = self.x_emb(x)
+        else:
+            x_emb = x
+
+        # CNN + FC
+        x_emb = x_emb.unsqueeze(1)  # (n_batch, 1, n_len, d_emb)
+        x3 = F.relu(self.conv3(x_emb)).squeeze()  # (n_batch, 100, n_len/3)
+        x4 = F.relu(self.conv4(x_emb)).squeeze()  # (n_batch, 100, n_len/3)
+        x5 = F.relu(self.conv5(x_emb)).squeeze()  # (n_batch, 100, n_len/3)
+        x3 = F.max_pool1d(x3, x3.size(2)).squeeze()  # (n_batch, 100)
+        x4 = F.max_pool1d(x4, x4.size(2)).squeeze()  # (n_batch, 100)
+        x5 = F.max_pool1d(x5, x5.size(2)).squeeze()  # (n_batch, 100)
+        x_comb = torch.cat([x3, x4, x5], dim=1)  # (n_batch, 300)
+        c = self.disc_fc(x_comb)  # (n_batch, d_c)
+
+        # Output check
+        assert_check(c, [x.size(0), self.d_c], torch.float, x.device)
+
+        return c
 
     def word_dropout(self, x):
         """
@@ -254,8 +316,7 @@ class RnnVae(nn.Module):
 
         return c
 
-    def sample_sentence(self, z=None, c=None,
-                        temp=1.0, device=torch.device('cpu')):
+    def sample_sentence(self, z=None, c=None, temp=1.0):
         """Generating single sentence in eval mode
 
         :param z: (n_batch, d_z) of floats, latent vector z / None
@@ -267,15 +328,16 @@ class RnnVae(nn.Module):
 
         # Input check
         if z is not None:
-            assert_check(z, [-1, self.d_z], torch.float, device)
+            assert_check(z, [-1, self.d_z], torch.float)
         if c is not None:
-            assert_check(c, [-1, self.d_c], torch.float, device)
+            assert_check(c, [-1, self.d_c], torch.float)
         assert isinstance(temp, float) and 0 < temp <= 1
 
         # Enable evaluating mode
         self.eval()
 
         # Initial values
+        device = self.x_emb.weight.device
         w = torch.tensor(self.bos, device=device)  # 0
         if z is None:
             z = self.sample_z_prior(1, device)  # (1, d_z)
@@ -294,9 +356,9 @@ class RnnVae(nn.Module):
             # Step
             o, h = self.decoder_rnn(x_emb, h)  # (1, 1, d_z + d_c)
             y = self.decoder_fc(o).view(-1)  # n_vocab
+            y = F.softmax(y / temp, dim=0)  # n_vocab
 
             # Generating
-            y = F.softmax(y / temp, dim=0)  # n_vocab
             w = torch.multinomial(y, 1)[0]  # 0
             outputs.append(w.item())
 
@@ -305,9 +367,69 @@ class RnnVae(nn.Module):
                 break
 
         # Whole sentence
-        sent = torch.tensor(outputs, device=device)
+        x = torch.tensor(outputs, device=device)
+
+        # Back to train
+        self.train()
 
         # Output check
-        assert_check(sent, [-1], dtype=torch.long, device=device)
+        assert_check(x, [-1], torch.long, device)
 
-        return sent
+        return x
+
+    def sample_soft_embed(self, z=None, c=None, temp=1.0):
+        """Generating single soft sample x
+
+        :param z: (n_batch, d_z) of floats, latent vector z / None
+        :param c: (n_batch, d_c) of floats, code c / None
+        :param temp: temperature of softmax
+        :param device: device to run
+        :return: (n_len, d_emb) of floats, sampled soft x
+        """
+
+        # Input check
+        if z is not None:
+            assert_check(z, [-1, self.d_z], torch.float)
+        if c is not None:
+            assert_check(c, [-1, self.d_c], torch.float)
+        assert isinstance(temp, float) and 0 < temp <= 1
+
+        # Enable evaluating mode
+        self.eval()
+
+        # Initial values
+        device = self.x_emb.weight.device
+        emb = self.x_emb(torch.tensor(self.bos, device=device))  # d_emb
+        if z is None:
+            z = self.sample_z_prior(1, device)  # (1, d_z)
+        if c is None:
+            c = self.sample_c_prior(1, device)  # (1, d_c)
+        z, c = z.view(1, 1, -1), c.view(1, 1, -1)  # (1, 1, d_z/d_c)
+        h = torch.cat([z, c], dim=2)  # (1, 1, d_z + d_c)
+
+        # Generating cycle, word by word
+        outputs = [emb]
+        for i in range(self.n_len - 1):
+            # Init
+            x_emb = emb.view(1, 1, -1)
+            x_emb = torch.cat([x_emb, z, c], 2)  # (1, 1, d_emb + d_z + d_c)
+
+            # Step
+            o, h = self.decoder_rnn(x_emb, h)
+            y = self.decoder_fc(o).view(-1)  # n_vocab
+            y = F.softmax(y / temp, dim=0)  # n_vocab
+
+            # Emb
+            emb = y.unsqueeze(0) @ self.x_emb.weight  # d_emb
+            outputs.append(emb)
+
+        # Whole sequence
+        x = torch.cat(outputs, dim=0)  # (n_len, d_emb)
+
+        # Back to train
+        self.train()
+
+        # Output check
+        assert_check(x, [-1, self.d_emb], torch.float, device)
+
+        return x
