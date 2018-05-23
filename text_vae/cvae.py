@@ -91,14 +91,11 @@ class RnnVae(nn.Module):
         # Input check
         assert_check(x, [-1, self.n_len], torch.long)
 
-        # Entering train mode
-        self.train()
-
         # Encoder: x -> z, kl_loss
         z, kl_loss = self.forward_encoder(x)
 
         # Code: x -> c
-        c = self.sample_c_prior(x.size(0), x.device)
+        c = self.sample_c_prior(x.size(0))
 
         # Decoder: x, z, c -> recon_loss
         recon_loss = self.forward_decoder(x, z, c)
@@ -315,7 +312,8 @@ class RnnVae(nn.Module):
         return c
 
     def sample_sentence(self, n_batch=1, z=None, c=None, temp=1.0, pad=True):
-        """Generating n_batch sentences in eval mode
+        """Generating n_batch sentences in eval mode with values (could be
+        not on same device)
 
         :param n_batch: number of sentences to generate
         :param z: (n_batch, d_z) of floats, latent vector z or None
@@ -337,7 +335,7 @@ class RnnVae(nn.Module):
             assert_check(c, [n_batch, self.d_c], torch.float)
         assert isinstance(temp, float) and 0 < temp <= 1
 
-        # Enable evaluating mode
+        # Enable eval mode
         self.eval()
 
         # Initial values
@@ -346,66 +344,44 @@ class RnnVae(nn.Module):
             z = self.sample_z_prior(n_batch)  # (n_batch, d_z)
         if c is None:
             c = self.sample_c_prior(n_batch)  # (n_batch, d_c)
-        z, c = z.to(device), c.to(device)
+        z1, c1 = z.to(device).unsqueeze(0), c.to(device).unsqueeze(0)  # +1
+        h = torch.cat([z1, c1], dim=2)  # (1, n_batch, d_z + d_c)
+        w = torch.tensor(self.bos, device=device).expand(n_batch)  # n_batch
+        x = torch.tensor(
+            [self.pad], device=device
+        ).repeat(n_batch, self.n_len)
+        x[:, 0] = self.bos
+        end_pads = torch.tensor(
+            [self.n_len], device=device
+        ).repeat(n_batch)
+        eos_mask = torch.zeros(n_batch, dtype=torch.uint8, device=device)
 
-
-        w = torch.tensor([self.bos], device=device).expand(n_batch)
-        outputs = [w]
-        for _ in range(self.n_len - 1):
+        # Cycle, word by word
+        for i in range(1, self.n_len):
             # Init
-            x_emb = self.x_emb(w).view(1, n_batch, -1)  # (1, n_batch, d_emb)
+            x_emb = self.x_emb(w).unsqueeze(0)  # (1, n_batch, d_emb)
             x_emb = torch.cat(
-                [x_emb, z, c], 2
+                [x_emb, z1, c1], 2
             )  # (1, n_batch, d_emb + d_z + d_c)
 
             # Step
             o, h = self.decoder_rnn(x_emb, h)
-            y = self.decoder_fc(o).view(n_batch, -1)
-            y = F.softmax(y / temp, dim=0)
+            y = self.decoder_fc(o).squeeze(0)
+            y = F.softmax(y / temp, dim=1)
 
             # Generating
             w = torch.multinomial(y, 1)[:, 0]
-            outputs.append(w)
-
-        # n_batch cycle
-        x = []
-        for z1, c1 in zip(z, c):
-            # Initial values
-            z1, c1 = z1.view(1, 1, -1), c1.view(1, 1, -1)  # (1, 1, d_z/d_c)
-            h = torch.cat([z1, c1], dim=2)  # (1, 1, d_z + d_c)
-
-            # Generating cycle, word by word
-            w = torch.tensor(self.bos, device=device)  # 0
-            outputs = [self.bos]
-            for _ in range(self.n_len - 1):
-                # Init
-                x_emb = self.x_emb(w).view(1, 1, -1)  # (1, 1, d_emb)
-                x_emb = torch.cat(
-                    [x_emb, z1, c1], 2
-                )  # (1, 1, d_emb + d_z + d_c)
-
-                # Step
-                o, h = self.decoder_rnn(x_emb, h)  # (1, 1, d_z + d_c)
-                y = self.decoder_fc(o).view(-1)  # n_vocab
-                y = F.softmax(y / temp, dim=0)  # n_vocab
-
-                # Generating
-                w = torch.multinomial(y, 1)[0]  # 0
-                outputs.append(w.item())
-
-                # Eos guard
-                if outputs[-1] == self.eos:
-                    break
-
-            # Whole sentence
-            if pad:
-                outputs.extend([self.pad] * (self.n_len - len(outputs)))
-            sent = torch.tensor(outputs, device=device)
-            x.append(sent)
+            x[~eos_mask, i] = w[~eos_mask]
+            i_eos_mask = (w == self.eos)
+            end_pads[i_eos_mask] = i
+            eos_mask = eos_mask | i_eos_mask
 
         # Pad
-        if pad:
-            x = torch.stack(x)
+        if not pad:
+            new_x = []
+            for i in range(x.size(0)):
+                new_x.append(x[i, :end_pads[i]])
+            x = new_x
 
         # Back to train
         self.train()
@@ -417,9 +393,9 @@ class RnnVae(nn.Module):
             assert_check(x, [n_batch, self.n_len], torch.long, device)
         else:
             assert len(x) == n_batch
-            for x_i in x:
-                assert_check(x_i, [-1], torch.long, device)
-                assert len(x_i) <= self.n_len
+            for i_x in x:
+                assert_check(i_x, [-1], torch.long, device)
+                assert len(i_x) <= self.n_len
 
         return z, c, x
 

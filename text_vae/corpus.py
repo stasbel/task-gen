@@ -98,7 +98,7 @@ class SSTCorpus(Corpus):
         #                 for w in model.sample_sentence(device=device) \
         #                 if w > 3)
         if name == 'x':
-            return self.x.reverse(example.unsqueeze(0))[0]
+            return self.x.reverse(example)
         elif name == 'y':
             return self.y.itos[example]
         else:

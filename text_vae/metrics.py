@@ -29,8 +29,10 @@ class Evaluator:
         """Calculating similarity metric, higher is better"""
         references = self._get_reference(mode)
         hypotheses = [
-            word_tokenize(self.corpus.reverse(model.sample_sentence()))
-            for _ in range(hypot_size)
+            word_tokenize(sent)
+            for sent in self.corpus.reverse(
+                model.sample_sentence(hypot_size)[-1]
+            )
         ]
 
         result = {}
@@ -45,8 +47,10 @@ class Evaluator:
     def self_bleu(self, model, hypot_size):
         """Calculating diversity metric, lower is better"""
         hypotheses = [
-            word_tokenize(self.corpus.reverse(model.sample_sentence()))
-            for _ in range(hypot_size)
+            word_tokenize(sent)
+            for sent in self.corpus.reverse(
+                model.sample_sentence(hypot_size)[-1]
+            )
         ]
 
         result = {}
