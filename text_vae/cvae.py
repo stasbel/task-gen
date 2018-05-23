@@ -3,7 +3,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from utils import assert_check
+from text_vae.utils import assert_check
 
 
 class RnnVae(nn.Module):
@@ -203,7 +203,7 @@ class RnnVae(nn.Module):
         return recon_loss
 
     def forward_discriminator(self, x, do_emb=True):
-        """Discriminator step, emulating c ~ D(x)
+        """Discriminator step, emulating weights for c ~ D(x)
 
         :param x: (n_batch, n_len) of longs or (n_batch, n_len, d_emb) of
         floats, input sentence x
@@ -268,19 +268,18 @@ class RnnVae(nn.Module):
 
         return x_drop
 
-    def sample_z_prior(self, n_batch, device):
+    def sample_z_prior(self, n_batch):
         """Sampling z ~ p(z) = N(0, I)
 
         :param n_batch: number of batches
-        :param device: device to run
         :return: (n_batch, d_z) of floats, sample of latent z
         """
 
         # Input check
         assert isinstance(n_batch, int) and n_batch > 0
-        assert isinstance(device, torch.device)
 
         # Sampling
+        device = self.x_emb.weight.device
         z = torch.randn((n_batch, self.d_z), device=device)  # (n_batch, d_z)
 
         # Output check
@@ -288,19 +287,18 @@ class RnnVae(nn.Module):
 
         return z
 
-    def sample_c_prior(self, n_batch, device):
+    def sample_c_prior(self, n_batch):
         """Sampling prior, emulating c ~ P(c)
 
         :param n_batch: number of batches
-        :param device: device to run
         :return: (n_batch, d_c) of floats, sample of code c
         """
 
         # Input check
         assert isinstance(n_batch, int) and n_batch > 0
-        assert isinstance(device, torch.device)
 
         # Sampling
+        device = self.x_emb.weight.device
         c = torch.tensor(
             np.random.multinomial(
                 n=1,
@@ -316,21 +314,27 @@ class RnnVae(nn.Module):
 
         return c
 
-    def sample_sentence(self, z=None, c=None, temp=1.0):
-        """Generating single sentence in eval mode
+    def sample_sentence(self, n_batch=1, z=None, c=None, temp=1.0, pad=True):
+        """Generating n_batch sentences in eval mode
 
-        :param z: (n_batch, d_z) of floats, latent vector z / None
-        :param c: (n_batch, d_c) of floats, code c / None
+        :param n_batch: number of sentences to generate
+        :param z: (n_batch, d_z) of floats, latent vector z or None
+        :param c: (n_batch, d_c) of floats, code c or None
         :param temp: temperature of softmax
-        :param device: device to run
-        :return: 1-dim tensor of longs: generated sent word ids
+        :param pad: if do padding to n_len
+        :return: tuple of three:
+            1. (n_batch, d_z) of floats, latent vector z
+            2. (n_batch, d_c) of floats, code c
+            3. (n_batch, n_len) of longs if pad and list of n_batch len of
+            tensors of longs: generated sents word ids if not
         """
 
         # Input check
+        assert isinstance(n_batch, int) and n_batch > 0
         if z is not None:
-            assert_check(z, [-1, self.d_z], torch.float)
+            assert_check(z, [n_batch, self.d_z], torch.float)
         if c is not None:
-            assert_check(c, [-1, self.d_c], torch.float)
+            assert_check(c, [n_batch, self.d_c], torch.float)
         assert isinstance(temp, float) and 0 < temp <= 1
 
         # Enable evaluating mode
@@ -338,44 +342,86 @@ class RnnVae(nn.Module):
 
         # Initial values
         device = self.x_emb.weight.device
-        w = torch.tensor(self.bos, device=device)  # 0
         if z is None:
-            z = self.sample_z_prior(1, device)  # (1, d_z)
+            z = self.sample_z_prior(n_batch)  # (n_batch, d_z)
         if c is None:
-            c = self.sample_c_prior(1, device)  # (1, d_c)
-        z, c = z.view(1, 1, -1), c.view(1, 1, -1)  # (1, 1, d_z/d_c)
-        h = torch.cat([z, c], dim=2)  # (1, 1, d_z + d_c)
+            c = self.sample_c_prior(n_batch)  # (n_batch, d_c)
+        z, c = z.to(device), c.to(device)
 
-        # Generating cycle, word by word
-        outputs = [self.bos]
-        for i in range(self.n_len - 1):
+
+        w = torch.tensor([self.bos], device=device).expand(n_batch)
+        outputs = [w]
+        for _ in range(self.n_len - 1):
             # Init
-            x_emb = self.x_emb(w).view(1, 1, -1)  # (1, 1, d_emb)
-            x_emb = torch.cat([x_emb, z, c], 2)  # (1, 1, d_emb + d_z + d_c)
+            x_emb = self.x_emb(w).view(1, n_batch, -1)  # (1, n_batch, d_emb)
+            x_emb = torch.cat(
+                [x_emb, z, c], 2
+            )  # (1, n_batch, d_emb + d_z + d_c)
 
             # Step
-            o, h = self.decoder_rnn(x_emb, h)  # (1, 1, d_z + d_c)
-            y = self.decoder_fc(o).view(-1)  # n_vocab
-            y = F.softmax(y / temp, dim=0)  # n_vocab
+            o, h = self.decoder_rnn(x_emb, h)
+            y = self.decoder_fc(o).view(n_batch, -1)
+            y = F.softmax(y / temp, dim=0)
 
             # Generating
-            w = torch.multinomial(y, 1)[0]  # 0
-            outputs.append(w.item())
+            w = torch.multinomial(y, 1)[:, 0]
+            outputs.append(w)
 
-            # Eos guard
-            if outputs[-1] == self.eos:
-                break
+        # n_batch cycle
+        x = []
+        for z1, c1 in zip(z, c):
+            # Initial values
+            z1, c1 = z1.view(1, 1, -1), c1.view(1, 1, -1)  # (1, 1, d_z/d_c)
+            h = torch.cat([z1, c1], dim=2)  # (1, 1, d_z + d_c)
 
-        # Whole sentence
-        x = torch.tensor(outputs, device=device)
+            # Generating cycle, word by word
+            w = torch.tensor(self.bos, device=device)  # 0
+            outputs = [self.bos]
+            for _ in range(self.n_len - 1):
+                # Init
+                x_emb = self.x_emb(w).view(1, 1, -1)  # (1, 1, d_emb)
+                x_emb = torch.cat(
+                    [x_emb, z1, c1], 2
+                )  # (1, 1, d_emb + d_z + d_c)
+
+                # Step
+                o, h = self.decoder_rnn(x_emb, h)  # (1, 1, d_z + d_c)
+                y = self.decoder_fc(o).view(-1)  # n_vocab
+                y = F.softmax(y / temp, dim=0)  # n_vocab
+
+                # Generating
+                w = torch.multinomial(y, 1)[0]  # 0
+                outputs.append(w.item())
+
+                # Eos guard
+                if outputs[-1] == self.eos:
+                    break
+
+            # Whole sentence
+            if pad:
+                outputs.extend([self.pad] * (self.n_len - len(outputs)))
+            sent = torch.tensor(outputs, device=device)
+            x.append(sent)
+
+        # Pad
+        if pad:
+            x = torch.stack(x)
 
         # Back to train
         self.train()
 
         # Output check
-        assert_check(x, [-1], torch.long, device)
+        assert_check(z, [n_batch, self.d_z], torch.float, device)
+        assert_check(c, [n_batch, self.d_c], torch.float, device)
+        if pad:
+            assert_check(x, [n_batch, self.n_len], torch.long, device)
+        else:
+            assert len(x) == n_batch
+            for x_i in x:
+                assert_check(x_i, [-1], torch.long, device)
+                assert len(x_i) <= self.n_len
 
-        return x
+        return z, c, x
 
     def sample_soft_embed(self, z=None, c=None, temp=1.0):
         """Generating single soft sample x

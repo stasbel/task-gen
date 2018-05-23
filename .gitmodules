@@ -1,3 +1,0 @@
-[submodule "task-data/code-docstring-corpus"]
-	path = task-data/code-docstring-corpus
-	url = https://github.com/EdinburghNLP/code-docstring-corpus.git
