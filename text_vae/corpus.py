@@ -60,34 +60,24 @@ class SSTCorpus(Corpus):
         # vocab.vectors = vocab.vectors.to(self.device)
         return vocab
 
-    def batcher(self, mode, split, *, n_batch=None, device=None, n_iter=None):
+    def batcher(self, mode, split, n_batch=None, device=None):
         n_batch = n_batch or self.n_batch
         device = device or self.device
-        split_instance = self._choose_split(split)
-        n_iter = n_iter or len(split_instance)
         b_iter = data.BucketIterator(
-            split_instance,
+            self._choose_split(split),
             n_batch,
             train=(split == 'train'),
             device=device  # also explicitly due to torchtext bug
         )
 
         if mode == 'unlabeled':
-            i_iter = 0
             for batch in b_iter:
                 if batch.batch_size == n_batch:
-                    i_iter += 1
                     yield batch.text.to(device)
-                if i_iter == n_iter:
-                    break
         elif mode == 'labeled':
-            i_iter = 0
             for batch in b_iter:
                 if batch.batch_size == n_batch:
-                    i_iter += 1
                     yield batch.text.to(device), batch.label.to(device)
-                if i_iter == n_iter:
-                    break
         else:
             raise ValueError(
                 "Invalid mode, should be one of the ('unlabeled', 'labeled')"
@@ -100,7 +90,7 @@ class SSTCorpus(Corpus):
         if name == 'x':
             return self.x.reverse(example)
         elif name == 'y':
-            return self.y.itos[example]
+            return self.y.vocab.itos[example]
         else:
             raise ValueError(
                 "Invalid name, should be one of the ('x', 'y')"

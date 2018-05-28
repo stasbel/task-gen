@@ -3,6 +3,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from text_vae.sru import SRU
+from text_vae.attention import SelfAttention
+
 from text_vae.utils import assert_check
 
 
@@ -10,12 +13,12 @@ class RnnVae(nn.Module):
     def __init__(self, **kwargs):
         super().__init__()
 
+        q, g = kwargs['q'], kwargs['g']
         self.n_len = kwargs['n_len']
-        self.d_h = kwargs['d_h']
         self.d_z = kwargs['d_z']
         self.d_c = kwargs['d_c']
         self.p_word_dropout = kwargs['p_word_dropout']
-        self.freeze_embeddings = kwargs['freeze_embeddings']
+        freeze_embeddings = kwargs['freeze_embeddings']
         x_vocab = kwargs['x_vocab']
         self.unk = x_vocab.stoi['<unk>']
         self.pad = x_vocab.stoi['<pad>']
@@ -25,7 +28,7 @@ class RnnVae(nn.Module):
 
         # Word embeddings layer
         if x_vocab is None:
-            self.d_emb = self.d_h
+            self.d_emb = q.d_h
             self.x_emb = nn.Embedding(self.n_vocab, self.d_emb, self.pad)
         else:
             self.d_emb = x_vocab.vectors.size(1)
@@ -34,19 +37,29 @@ class RnnVae(nn.Module):
             # Set pretrained embeddings
             self.x_emb.weight.data.copy_(x_vocab.vectors)
 
-            if self.freeze_embeddings:
+            if freeze_embeddings:
                 self.x_emb.weight.requires_grad = False
 
         # Encoder
-        self.encoder_rnn = nn.GRU(self.d_emb, self.d_h)
-        self.q_mu = nn.Linear(self.d_h, self.d_z)
-        self.q_logvar = nn.Linear(self.d_h, self.d_z)
+        self.encoder_rnn = SRU(
+            self.d_emb,
+            q.d_h,
+            num_layers=q.n_layers,
+            dropout=q.s_dropout,
+            rnn_dropout=q.r_dropout
+        )
+        self.q_mu = nn.Linear(q.d_h, self.d_z)
+        self.q_logvar = nn.Linear(q.d_h, self.d_z)
 
         # Decoder
-        self.decoder_rnn = nn.GRU(
+        self.decoder_rnn = SRU(
             self.d_emb + self.d_z + self.d_c,
-            self.d_z + self.d_c
+            self.d_z + self.d_c,
+            num_layers=g.n_layers,
+            dropout=g.s_dropout,
+            rnn_dropout=g.r_dropout
         )
+        self.decoder_a = SelfAttention(self.d_z + self.d_c)
         self.decoder_fc = nn.Linear(self.d_z + self.d_c, self.n_vocab)
 
         # Discriminator
@@ -66,6 +79,7 @@ class RnnVae(nn.Module):
         ])
         self.decoder = nn.ModuleList([
             self.decoder_rnn,
+            self.decoder_a,
             self.decoder_fc
         ])
         self.vae = nn.ModuleList([
@@ -80,7 +94,7 @@ class RnnVae(nn.Module):
             self.disc_fc
         ])
 
-    def forward(self, x):
+    def forward(self, x, use_c_prior=True):
         """Do the VAE forward step with prior c
 
         :param x: (n_batch, n_len) of longs, input sentence x
@@ -95,7 +109,10 @@ class RnnVae(nn.Module):
         z, kl_loss = self.forward_encoder(x)
 
         # Code: x -> c
-        c = self.sample_c_prior(x.size(0))
+        if use_c_prior:
+            c = self.sample_c_prior(x.size(0))
+        else:
+            c = F.softmax(self.forward_discriminator(x), dim=1)
 
         # Decoder: x, z, c -> recon_loss
         recon_loss = self.forward_decoder(x, z, c)
@@ -129,10 +146,10 @@ class RnnVae(nn.Module):
             x_emb = x
 
         # RNN
-        _, h = self.encoder_rnn(x_emb.t(), None)  # (1, n_batch, d_h)
+        h, _ = self.encoder_rnn(x_emb.t(), None)  # (n_len, n_batch, d_h)
 
         # Forward to latent
-        h = h.squeeze()  # (n_batch, d_h)
+        h = h[-1]  # (n_batch, d_h)
         mu, logvar = self.q_mu(h), self.q_logvar(h)  # (n_batch, d_z)
 
         # Reparameterization trick: z = mu + std * eps; eps ~ N(0, I)
@@ -168,7 +185,9 @@ class RnnVae(nn.Module):
         h_init = torch.cat([
             z.unsqueeze(0),
             c.unsqueeze(0)
-        ], 2)  # (1, n_batch, d_z + d_c)
+        ], 2).expand(
+            self.decoder_rnn.depth, -1, -1
+        )  # (n_layers, n_batch, d_z + d_c)
 
         # Inputs
         x_drop = self.word_dropout(x)  # (n_batch, n_len)
@@ -181,9 +200,12 @@ class RnnVae(nn.Module):
         # Rnn step
         outputs, _ = self.decoder_rnn(x_emb,
                                       h_init)  # (n_len, n_batch, d_z + d_c)
-        n_len, n_batch, _ = outputs.shape  # (n_len, n_batch)
+
+        # Attention
+        outputs, _ = self.decoder_a(outputs)
 
         # FC to vocab
+        n_len, n_batch, _ = outputs.shape  # (n_len, n_batch)
         y = self.decoder_fc(
             outputs.view(n_len * n_batch, -1)
         ).view(n_len, n_batch, -1)  # (n_len, n_batch, n_vocab)
@@ -334,6 +356,7 @@ class RnnVae(nn.Module):
         if c is not None:
             assert_check(c, [n_batch, self.d_c], torch.float)
         assert isinstance(temp, float) and 0 < temp <= 1
+        assert isinstance(pad, bool)
 
         # Enable eval mode
         self.eval()
@@ -344,8 +367,12 @@ class RnnVae(nn.Module):
             z = self.sample_z_prior(n_batch)  # (n_batch, d_z)
         if c is None:
             c = self.sample_c_prior(n_batch)  # (n_batch, d_c)
-        z1, c1 = z.to(device).unsqueeze(0), c.to(device).unsqueeze(0)  # +1
-        h = torch.cat([z1, c1], dim=2)  # (1, n_batch, d_z + d_c)
+        z, c = z.to(device), c.to(device)  # device change
+        z1, c1 = z.unsqueeze(0), c.unsqueeze(0)  # +1
+        n_layers = self.decoder_rnn.depth
+        h = torch.cat(
+            [z1, c1], dim=2
+        ).expand(n_layers, -1, -1)  # (n_layers, n_batch, d_z + d_c)
         w = torch.tensor(self.bos, device=device).expand(n_batch)  # n_batch
         x = torch.tensor(
             [self.pad], device=device
@@ -359,10 +386,10 @@ class RnnVae(nn.Module):
         # Cycle, word by word
         for i in range(1, self.n_len):
             # Init
-            x_emb = self.x_emb(w).unsqueeze(0)  # (1, n_batch, d_emb)
+            x_emb = self.x_emb(w).unsqueeze(0)  # (n_layers, n_batch, d_emb)
             x_emb = torch.cat(
                 [x_emb, z1, c1], 2
-            )  # (1, n_batch, d_emb + d_z + d_c)
+            )  # (n_layers, n_batch, d_emb + d_z + d_c)
 
             # Step
             o, h = self.decoder_rnn(x_emb, h)
@@ -399,7 +426,7 @@ class RnnVae(nn.Module):
 
         return z, c, x
 
-    def sample_soft_embed(self, z=None, c=None, temp=1.0):
+    def sample_soft_embed(self, n_batch=1, z=None, c=None, temp=1.0):
         """Generating single soft sample x
 
         :param z: (n_batch, d_z) of floats, latent vector z / None
@@ -410,48 +437,51 @@ class RnnVae(nn.Module):
         """
 
         # Input check
+        assert isinstance(n_batch, int) and n_batch > 0
         if z is not None:
-            assert_check(z, [-1, self.d_z], torch.float)
+            assert_check(z, [n_batch, self.d_z], torch.float)
         if c is not None:
-            assert_check(c, [-1, self.d_c], torch.float)
+            assert_check(c, [n_batch, self.d_c], torch.float)
         assert isinstance(temp, float) and 0 < temp <= 1
-
-        # Enable evaluating mode
-        self.eval()
 
         # Initial values
         device = self.x_emb.weight.device
-        emb = self.x_emb(torch.tensor(self.bos, device=device))  # d_emb
         if z is None:
-            z = self.sample_z_prior(1, device)  # (1, d_z)
+            z = self.sample_z_prior(n_batch)  # (n_batch, d_z)
         if c is None:
-            c = self.sample_c_prior(1, device)  # (1, d_c)
-        z, c = z.view(1, 1, -1), c.view(1, 1, -1)  # (1, 1, d_z/d_c)
-        h = torch.cat([z, c], dim=2)  # (1, 1, d_z + d_c)
+            c = self.sample_c_prior(n_batch)  # (n_batch, d_c)
+        z, c = z.to(device), c.to(device)  # device change
+        z1, c1 = z.unsqueeze(0), c.unsqueeze(0)  # +1
+        h = torch.cat(
+            [z1, c1], dim=2
+        ).expand(
+            self.decoder_rnn.depth, -1, -1
+        )  # (n_layers, n_batch, d_z + d_c)
+        emb = self.x_emb(
+            torch.tensor(self.bos, device=device).expand(n_batch)
+        )  # (n_batch, d_emb)
 
-        # Generating cycle, word by word
+        # Cycle, word by word
         outputs = [emb]
-        for i in range(self.n_len - 1):
+        for _ in range(1, self.n_len):
             # Init
-            x_emb = emb.view(1, 1, -1)
-            x_emb = torch.cat([x_emb, z, c], 2)  # (1, 1, d_emb + d_z + d_c)
+            x_emb = emb.unsqueeze(0)
+            x_emb = torch.cat([x_emb, z1, c1], 2)  # (1, 1, d_emb + d_z + d_c)
 
             # Step
             o, h = self.decoder_rnn(x_emb, h)
-            y = self.decoder_fc(o).view(-1)  # n_vocab
-            y = F.softmax(y / temp, dim=0)  # n_vocab
+            y = self.decoder_fc(o).squeeze(0)
+            y = F.softmax(y / temp, dim=1)
 
-            # Emb
-            emb = y.unsqueeze(0) @ self.x_emb.weight  # d_emb
+            emb = y @ self.x_emb.weight  # (n_batch, d_emb)
             outputs.append(emb)
 
-        # Whole sequence
-        x = torch.cat(outputs, dim=0)  # (n_len, d_emb)
-
-        # Back to train
-        self.train()
+        # Making x
+        x = torch.stack(outputs, dim=1)  # (n_batch, n_len, d_emb)
 
         # Output check
-        assert_check(x, [-1, self.d_emb], torch.float, device)
+        assert_check(z, [n_batch, self.d_z], torch.float, device)
+        assert_check(c, [n_batch, self.d_c], torch.float, device)
+        assert_check(x, [n_batch, self.n_len, self.d_emb], torch.float, device)
 
-        return x
+        return z, c, x
