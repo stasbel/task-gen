@@ -43,7 +43,6 @@ class SelfAttention(nn.Module):
         attention_weights[:, 0, :] = 0  # first to go gains nothing
 
         mix = torch.bmm(attention_weights, query)
-
         combined = torch.cat([mix, query], dim=2)
         combined = combined.view(batch_size * n_len, 2 * dimensions)
 
@@ -51,3 +50,30 @@ class SelfAttention(nn.Module):
         output = F.selu(output)
 
         return output.t().contiguous(), attention_weights
+
+    def forward_inference(self, query, context):
+        n_batch, d_h = query.size()
+        _, n_len, _ = context.size()
+
+        if self.attention_type == "general":
+            query = self.linear_in(query)
+
+        attention_scores = torch.bmm(
+            query.unsqueeze(1),
+            context.transpose(1, 2).contiguous()
+        ).squeeze(1)
+
+        attention_weights = F.softmax(attention_scores, dim=-1)
+
+        mix = torch.bmm(
+            attention_weights.unsqueeze(1),
+            context
+        ).squeeze(1)
+
+        combined = torch.cat([mix, query], dim=1)
+
+        output = self.linear_out(combined)
+        output = F.selu(output)
+
+        return output, attention_weights
+

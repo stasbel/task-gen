@@ -69,282 +69,7 @@ def check_sru_requirement(abort=False):
     return True
 
 
-SRU_CODE = """
-extern "C" {
-    __forceinline__ __device__ float sigmoidf(float x)
-    {
-        return 1.f / (1.f + expf(-x));
-    }
-    __forceinline__ __device__ float reluf(float x)
-    {
-        return (x > 0.f) ? x : 0.f;
-    }
-    __global__ void sru_fwd(const float * __restrict__ u,
-                            const float * __restrict__ x,
-                            const float * __restrict__ bias,
-                            const float * __restrict__ init,
-                            const float * __restrict__ mask_h,
-                            const int len, const int batch,
-                            const int d, const int k,
-                            float * __restrict__ h,
-                            float * __restrict__ c,
-                            const int activation_type)
-    {
-        assert ((k == 3) || (x == NULL));
-        int ncols = batch*d;
-        int col = blockIdx.x * blockDim.x + threadIdx.x;
-        if (col >= ncols) return;
-        int ncols_u = ncols*k;
-        int ncols_x = (k == 3) ? ncols : ncols_u;
-        const float bias1 = *(bias + (col%d));
-        const float bias2 = *(bias + (col%d) + d);
-        const float mask = (mask_h == NULL) ? 1.0 : (*(mask_h + col));
-        float cur = *(init + col);
-        const float *up = u + (col*k);
-        const float *xp = (k == 3) ? (x + col) : (up + 3);
-        float *cp = c + col;
-        float *hp = h + col;
-        for (int row = 0; row < len; ++row)
-        {
-            float g1 = sigmoidf((*(up+1))+bias1);
-            float g2 = sigmoidf((*(up+2))+bias2);
-            cur = (cur-(*up))*g1 + (*up);
-            *cp = cur;
-            float val = (activation_type == 1) ? tanh(cur) : (
-                (activation_type == 2) ? reluf(cur) : cur
-            );
-            *hp = (val*mask-(*xp))*g2 + (*xp);
-            up += ncols_u;
-            xp += ncols_x;
-            cp += ncols;
-            hp += ncols;
-        }
-    }
-    __global__ void sru_bwd(const float * __restrict__ u,
-                            const float * __restrict__ x,
-                            const float * __restrict__ bias,
-                            const float * __restrict__ init,
-                            const float * __restrict__ mask_h,
-                            const float * __restrict__ c,
-                            const float * __restrict__ grad_h,
-                            const float * __restrict__ grad_last,
-                            const int len,
-                            const int batch, const int d, const int k,
-                            float * __restrict__ grad_u,
-                            float * __restrict__ grad_x,
-                            float * __restrict__ grad_bias,
-                            float * __restrict__ grad_init,
-                            int activation_type)
-    {
-        assert((k == 3) || (x == NULL));
-        assert((k == 3) || (grad_x == NULL));
-        int ncols = batch*d;
-        int col = blockIdx.x * blockDim.x + threadIdx.x;
-        if (col >= ncols) return;
-        int ncols_u = ncols*k;
-        int ncols_x = (k == 3) ? ncols : ncols_u;
-        const float bias1 = *(bias + (col%d));
-        const float bias2 = *(bias + (col%d) + d);
-        const float mask = (mask_h == NULL) ? 1.0 : (*(mask_h + col));
-        float gbias1 = 0;
-        float gbias2 = 0;
-        float cur = *(grad_last + col);
-        const float *up = u + (col*k) + (len-1)*ncols_u;
-        const float *xp = (k == 3) ? (x + col + (len-1)*ncols) : (up + 3);
-        const float *cp = c + col + (len-1)*ncols;
-        const float *ghp = grad_h + col + (len-1)*ncols;
-        float *gup = grad_u + (col*k) + (len-1)*ncols_u;
-        float *gxp = (k == 3) ? (grad_x + col + (len-1)*ncols) : (gup + 3);
-        for (int row = len-1; row >= 0; --row)
-        {
-            const float g1 = sigmoidf((*(up+1))+bias1);
-            const float g2 = sigmoidf((*(up+2))+bias2);
-            const float c_val = (activation_type == 1) ? tanh(*cp) : (
-                (activation_type == 2) ? reluf(*cp) : (*cp)
-            );
-            const float x_val = *xp;
-            const float u_val = *up;
-            const float prev_c_val = (row>0) ? (*(cp-ncols)) : (*(init+col));
-            const float gh_val = *ghp;
-            // h = c*g2 + x*(1-g2) = (c-x)*g2 + x
-            // c = c'*g1 + g0*(1-g1) = (c'-g0)*g1 + g0
-            // grad wrt x
-            *gxp = gh_val*(1-g2);
-            // grad wrt g2, u2 and bias2
-            float gg2 = gh_val*(c_val*mask-x_val)*(g2*(1-g2));
-            *(gup+2) = gg2;
-            gbias2 += gg2;
-            // grad wrt c
-            const float tmp = (activation_type == 1) ? (g2*(1-c_val*c_val)) : (
-                ((activation_type == 0) || (c_val > 0)) ? g2 : 0.f
-            );
-            const float gc = gh_val*mask*tmp + cur;
-            // grad wrt u0
-            *gup = gc*(1-g1);
-            // grad wrt g1, u1, and bias1
-            float gg1 = gc*(prev_c_val-u_val)*(g1*(1-g1));
-            *(gup+1) = gg1;
-            gbias1 += gg1;
-            // grad wrt c'
-            cur = gc*g1;
-            up -= ncols_u;
-            xp -= ncols_x;
-            cp -= ncols;
-            gup -= ncols_u;
-            gxp -= ncols_x;
-            ghp -= ncols;
-        }
-        *(grad_bias + col) = gbias1;
-        *(grad_bias + col + ncols) = gbias2;
-        *(grad_init +col) = cur;
-    }
-    __global__ void sru_bi_fwd(const float * __restrict__ u,
-                               const float * __restrict__ x,
-                               const float * __restrict__ bias,
-                               const float * __restrict__ init,
-                               const float * __restrict__ mask_h,
-                               const int len, const int batch,
-                               const int d, const int k,
-                               float * __restrict__ h,
-                               float * __restrict__ c,
-                               const int activation_type)
-    {
-        assert ((k == 3) || (x == NULL));
-        assert ((k == 3) || (k == 4));
-        int ncols = batch*d*2;
-        int col = blockIdx.x * blockDim.x + threadIdx.x;
-        if (col >= ncols) return;
-        int ncols_u = ncols*k;
-        int ncols_x = (k == 3) ? ncols : ncols_u;
-        const float mask = (mask_h == NULL) ? 1.0 : (*(mask_h + col));
-        float cur = *(init + col);
-        const int d2 = d*2;
-        const bool flip = (col%d2) >= d;
-        const float bias1 = *(bias + (col%d2));
-        const float bias2 = *(bias + (col%d2) + d2);
-        const float *up = u + (col*k);
-        const float *xp = (k == 3) ? (x + col) : (up + 3);
-        float *cp = c + col;
-        float *hp = h + col;
-        if (flip) {
-            up += (len-1)*ncols_u;
-            xp += (len-1)*ncols_x;
-            cp += (len-1)*ncols;
-            hp += (len-1)*ncols;
-        }
-        int ncols_u_ = flip ? -ncols_u : ncols_u;
-        int ncols_x_ = flip ? -ncols_x : ncols_x;
-        int ncols_ = flip ? -ncols : ncols;
-        for (int cnt = 0; cnt < len; ++cnt)
-        {
-            float g1 = sigmoidf((*(up+1))+bias1);
-            float g2 = sigmoidf((*(up+2))+bias2);
-            cur = (cur-(*up))*g1 + (*up);
-            *cp = cur;
-            float val = (activation_type == 1) ? tanh(cur) : (
-                (activation_type == 2) ? reluf(cur) : cur
-            );
-            *hp = (val*mask-(*xp))*g2 + (*xp);
-            up += ncols_u_;
-            xp += ncols_x_;
-            cp += ncols_;
-            hp += ncols_;
-        }
-    }
-    __global__ void sru_bi_bwd(const float * __restrict__ u,
-                               const float * __restrict__ x,
-                               const float * __restrict__ bias,
-                               const float * __restrict__ init,
-                               const float * __restrict__ mask_h,
-                               const float * __restrict__ c,
-                               const float * __restrict__ grad_h,
-                               const float * __restrict__ grad_last,
-                               const int len, const int batch,
-                               const int d, const int k,
-                               float * __restrict__ grad_u,
-                               float * __restrict__ grad_x,
-                               float * __restrict__ grad_bias,
-                               float * __restrict__ grad_init,
-                               int activation_type)
-    {
-        assert((k == 3) || (x == NULL));
-        assert((k == 3) || (grad_x == NULL));
-        assert((k == 3) || (k == 4));
-        int ncols = batch*d*2;
-        int col = blockIdx.x * blockDim.x + threadIdx.x;
-        if (col >= ncols) return;
-        int ncols_u = ncols*k;
-        int ncols_x = (k == 3) ? ncols : ncols_u;
-        const float mask = (mask_h == NULL) ? 1.0 : (*(mask_h + col));
-        float gbias1 = 0;
-        float gbias2 = 0;
-        float cur = *(grad_last + col);
-        const int d2 = d*2;
-        const bool flip = ((col%d2) >= d);
-        const float bias1 = *(bias + (col%d2));
-        const float bias2 = *(bias + (col%d2) + d2);
-        const float *up = u + (col*k);
-        const float *xp = (k == 3) ? (x + col) : (up + 3);
-        const float *cp = c + col;
-        const float *ghp = grad_h + col;
-        float *gup = grad_u + (col*k);
-        float *gxp = (k == 3) ? (grad_x + col) : (gup + 3);
-        if (!flip) {
-            up += (len-1)*ncols_u;
-            xp += (len-1)*ncols_x;
-            cp += (len-1)*ncols;
-            ghp += (len-1)*ncols;
-            gup += (len-1)*ncols_u;
-            gxp += (len-1)*ncols_x;
-        }
-        int ncols_u_ = flip ? -ncols_u : ncols_u;
-        int ncols_x_ = flip ? -ncols_x : ncols_x;
-        int ncols_ = flip ? -ncols : ncols;
-        for (int cnt = 0; cnt < len; ++cnt)
-        {
-            const float g1 = sigmoidf((*(up+1))+bias1);
-            const float g2 = sigmoidf((*(up+2))+bias2);
-            const float c_val = (activation_type == 1) ? tanh(*cp) : (
-                (activation_type == 2) ? reluf(*cp) : (*cp)
-            );
-            const float x_val = *xp;
-            const float u_val = *up;
-            const float prev_c_val = (cnt<len-1)?(*(cp-ncols_)):(*(init+col));
-            const float gh_val = *ghp;
-            // h = c*g2 + x*(1-g2) = (c-x)*g2 + x
-            // c = c'*g1 + g0*(1-g1) = (c'-g0)*g1 + g0
-            // grad wrt x
-            *gxp = gh_val*(1-g2);
-            // grad wrt g2, u2 and bias2
-            float gg2 = gh_val*(c_val*mask-x_val)*(g2*(1-g2));
-            *(gup+2) = gg2;
-            gbias2 += gg2;
-            // grad wrt c
-            const float tmp = (activation_type == 1) ? (g2*(1-c_val*c_val)) : (
-                ((activation_type == 0) || (c_val > 0)) ? g2 : 0.f
-            );
-            const float gc = gh_val*mask*tmp + cur;
-            // grad wrt u0
-            *gup = gc*(1-g1);
-            // grad wrt g1, u1, and bias1
-            float gg1 = gc*(prev_c_val-u_val)*(g1*(1-g1));
-            *(gup+1) = gg1;
-            gbias1 += gg1;
-            // grad wrt c'
-            cur = gc*g1;
-            up -= ncols_u_;
-            xp -= ncols_x_;
-            cp -= ncols_;
-            gup -= ncols_u_;
-            gxp -= ncols_x_;
-            ghp -= ncols_;
-        }
-        *(grad_bias + col) = gbias1;
-        *(grad_bias + col + ncols) = gbias2;
-        *(grad_init +col) = cur;
-    }
-}
-"""
+SRU_CODE = open('sru.cu').read()
 SRU_FWD_FUNC, SRU_BWD_FUNC = None, None
 SRU_BiFWD_FUNC, SRU_BiBWD_FUNC = None, None
 SRU_STREAM = None
@@ -401,10 +126,11 @@ class SRU_Compute(Function):
         k_ = k // 2 if self.bidirectional else k
         ncols = batch * d * bidir
         thread_per_block = min(512, ncols)
-        num_block = (ncols-1) // thread_per_block+1
+        num_block = (ncols - 1) // thread_per_block + 1
 
         init_ = x.new(ncols).zero_() if init is None else init
-        size = (length, batch, d*bidir) if x.dim() == 3 else (batch, d*bidir)
+        size = (length, batch, d * bidir) if x.dim() == 3 else (
+        batch, d * bidir)
         c = x.new(*size)
         h = x.new(*size)
 
@@ -447,15 +173,15 @@ class SRU_Compute(Function):
         batch = x.size(-2)
         d = self.d_out
         k = u.size(-1) // d
-        k_ = k//2 if self.bidirectional else k
-        ncols = batch*d*bidir
+        k_ = k // 2 if self.bidirectional else k
+        ncols = batch * d * bidir
         thread_per_block = min(512, ncols)
-        num_block = (ncols-1) // thread_per_block+1
+        num_block = (ncols - 1) // thread_per_block + 1
 
         init_ = x.new(ncols).zero_() if init is None else init
         grad_u = u.new(*u.size())
-        grad_bias = x.new(2, batch, d*bidir)
-        grad_init = x.new(batch, d*bidir)
+        grad_bias = x.new(2, batch, d * bidir)
+        grad_init = x.new(batch, d * bidir)
 
         # For DEBUG
         # size = (length, batch, x.size(-1)) \
@@ -501,27 +227,27 @@ class SRUCell(nn.Module):
         self.bidirectional = bidirectional
         self.activation_type = 2 if use_relu else (1 if use_tanh else 0)
 
-        out_size = n_out*2 if bidirectional else n_out
+        out_size = n_out * 2 if bidirectional else n_out
         k = 4 if n_in != out_size else 3
-        self.size_per_dir = n_out*k
+        self.size_per_dir = n_out * k
         self.weight = nn.Parameter(torch.Tensor(
             n_in,
-            self.size_per_dir*2 if bidirectional else self.size_per_dir
+            self.size_per_dir * 2 if bidirectional else self.size_per_dir
         ))
         self.bias = nn.Parameter(torch.Tensor(
-            n_out*4 if bidirectional else n_out*2
+            n_out * 4 if bidirectional else n_out * 2
         ))
         self.init_weight()
 
     def init_weight(self):
-        val_range = (3.0/self.n_in)**0.5
+        val_range = (3.0 / self.n_in) ** 0.5
         self.weight.data.uniform_(-val_range, val_range)
         self.bias.data.zero_()
 
     def set_bias(self, bias_val=0):
         n_out = self.n_out
         if self.bidirectional:
-            self.bias.data[n_out*2:].zero_().add_(bias_val)
+            self.bias.data[n_out * 2:].zero_().add_(bias_val)
         else:
             self.bias.data[n_out:].zero_().add_(bias_val)
 
@@ -531,7 +257,7 @@ class SRUCell(nn.Module):
         batch = input.size(-2)
         if c0 is None:
             c0 = Variable(input.data.new(
-                batch, n_out if not self.bidirectional else n_out*2
+                batch, n_out if not self.bidirectional else n_out * 2
             ).zero_())
 
         if self.training and (self.rnn_dropout > 0):
@@ -545,22 +271,23 @@ class SRUCell(nn.Module):
 
         if self.training and (self.dropout > 0):
             bidir = 2 if self.bidirectional else 1
-            mask_h = self.get_dropout_mask_((batch, n_out*bidir), self.dropout)
+            mask_h = self.get_dropout_mask_((batch, n_out * bidir),
+                                            self.dropout)
             h, c = SRU_Compute(self.activation_type, n_out,
                                self.bidirectional)(
-                                   u, input, self.bias, c0, mask_h
+                u, input, self.bias, c0, mask_h
             )
         else:
             h, c = SRU_Compute(self.activation_type, n_out,
                                self.bidirectional)(
-                                   u, input, self.bias, c0
+                u, input, self.bias, c0
             )
 
         return h, c
 
     def get_dropout_mask_(self, size, p):
         w = self.weight.data
-        return Variable(w.new(*size).bernoulli_(1-p).div_(1-p))
+        return Variable(w.new(*size).bernoulli_(1 - p).div_(1 - p))
 
 
 class SRU(nn.Module):
@@ -599,13 +326,13 @@ class SRU(nn.Module):
         self.rnn_dropout = rnn_dropout
         self.rnn_lst = nn.ModuleList()
         self.bidirectional = bidirectional
-        self.out_size = hidden_size*2 if bidirectional else hidden_size
+        self.out_size = hidden_size * 2 if bidirectional else hidden_size
 
         for i in range(num_layers):
             sru_cell = SRUCell(
                 n_in=self.n_in if i == 0 else self.out_size,
                 n_out=self.n_out,
-                dropout=dropout if i+1 != num_layers else 0,
+                dropout=dropout if i + 1 != num_layers else 0,
                 rnn_dropout=rnn_dropout,
                 bidirectional=bidirectional,
                 use_tanh=use_tanh,
@@ -622,14 +349,14 @@ class SRU(nn.Module):
         dir_ = 2 if self.bidirectional else 1
         if c0 is None:
             zeros = Variable(input.data.new(
-                input.size(1), self.n_out*dir_
+                input.size(1), self.n_out * dir_
             ).zero_())
             c0 = [zeros for i in range(self.depth)]
         else:
             if isinstance(c0, tuple):
                 # RNNDecoderState wraps hidden as a tuple.
                 c0 = c0[0]
-            assert c0.dim() == 3    # (depth, batch, dir_*n_out)
+            assert c0.dim() == 3  # (depth, batch, dir_*n_out)
             c0 = [h.squeeze(0) for h in c0.chunk(self.depth, 0)]
 
         prevx = input
