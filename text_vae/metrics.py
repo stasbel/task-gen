@@ -7,7 +7,11 @@ from nltk.translate.bleu_score import sentence_bleu, SmoothingFunction
 
 class Evaluator:
     def __init__(self, corpus,
-                 blue_span=(2, 5), blue_smooth='epsilon'):
+                 blue_span=(2, 5), blue_smooth='epsilon',
+                 sample_params=None):
+        if sample_params is None:
+            sample_params = {}
+        self.sample_params = sample_params
         self.corpus = corpus
 
         # BLEU
@@ -31,7 +35,7 @@ class Evaluator:
         hypotheses = [
             word_tokenize(sent)
             for sent in self.corpus.reverse(
-                model.sample_sentence(hypot_size)[-1]
+                model.sample_sentence(hypot_size, **self.sample_params)[2]
             )
         ]
 
@@ -49,7 +53,7 @@ class Evaluator:
         hypotheses = [
             word_tokenize(sent)
             for sent in self.corpus.reverse(
-                model.sample_sentence(hypot_size)[-1]
+                model.sample_sentence(hypot_size, **self.sample_params)[2]
             )
         ]
 
