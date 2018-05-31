@@ -26,6 +26,7 @@ class RnnVae(nn.Module):
         self.bos = x_vocab.stoi['<bos>']
         self.eos = x_vocab.stoi['<eos>']
         self.n_vocab = len(x_vocab)
+        self.attention = kwargs['attention']
 
         # Word embeddings layer
         if x_vocab is None:
@@ -195,7 +196,8 @@ class RnnVae(nn.Module):
         )  # (n_len, n_batch, d_z + d_c)
 
         # Attention
-        outputs, _ = self.decoder_a(outputs)
+        if self.attention:
+            outputs, _ = self.decoder_a(outputs)
 
         # FC to vocab
         n_len, n_batch, _ = outputs.shape  # (n_len, n_batch)
@@ -391,14 +393,16 @@ class RnnVae(nn.Module):
 
             # Step
             o, h = self.decoder_rnn(x_emb, h)  # o: (1, n, d_z + d_c)
-            context[:, i - 1, :] = o[0]
-            # o: (n, d_z + d_c), aw: (n, i)
-            o, aw = self.decoder_a.forward_inference(
-                o.squeeze(0), context[:, :i, :]
-            )
-            a[~eos_mask, i, :i] = aw[~eos_mask]
-            if coverage_penalty:
-                H[~eos_mask] += aw.sum(1).clamp(max=1).log()[~eos_mask]
+            o = o.squeeze(0)
+            context[:, i - 1, :] = o
+            if self.attention:
+                # o: (n, d_z + d_c), aw: (n, i)
+                o, aw = self.decoder_a.forward_inference(
+                    o, context[:, :i, :]
+                )
+                a[~eos_mask, i, :i] = aw[~eos_mask]
+                if coverage_penalty:
+                    H[~eos_mask] += aw.sum(1).clamp(max=1).log()[~eos_mask]
             y = F.softmax(self.decoder_fc(o) / temp, dim=-1)  # (n, n_vocab)
 
             # Generating
@@ -501,7 +505,8 @@ class RnnVae(nn.Module):
             x_emb,
             h_init.expand(self.decoder_rnn.depth, -1, -1)
         )  # (n_len, n_batch, d_z + d_c)
-        outputs, _ = self.decoder_a(outputs)
+        if self.attention:
+            outputs, _ = self.decoder_a(outputs)
         n_len, n_batch, _ = outputs.shape  # (n_len, n_batch)
         y = self.decoder_fc(
             outputs.view(n_len * n_batch, -1)

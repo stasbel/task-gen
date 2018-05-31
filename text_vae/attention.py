@@ -20,13 +20,18 @@ class SelfAttention(nn.Module):
         self.linear_out = nn.Linear(dimensions * 2, dimensions, bias=False)
 
     def forward(self, query):
+        """
+
+        :param query: n_len, n_batch, n_d
+        :return:
+        """
         query = query.t().contiguous()
-        batch_size, n_len, dimensions = query.size()
+        n_batch, n_len, d = query.size()
 
         if self.attention_type == "general":
-            query = query.view(batch_size * n_len, dimensions)
+            query = query.view(n_batch * n_len, d)
             query = self.linear_in(query)
-            query = query.view(batch_size, n_len, dimensions)
+            query = query.view(n_batch, n_len, d)
 
         attention_scores = torch.bmm(
             query,
@@ -36,18 +41,18 @@ class SelfAttention(nn.Module):
                             dtype=torch.uint8, device=query.device)
         attention_scores[:, mask] = -INF
 
-        attention_scores = attention_scores.view(batch_size * n_len, n_len)
+        attention_scores = attention_scores.view(n_batch * n_len, n_len)
         attention_weights = F.softmax(attention_scores, dim=-1)
-        attention_weights = attention_weights.view(batch_size, n_len, n_len)
+        attention_weights = attention_weights.view(n_batch, n_len, n_len)
         attention_weights = attention_weights.clone()
         attention_weights[:, 0, :] = 0  # first to go gains nothing
 
         mix = torch.bmm(attention_weights, query)
         combined = torch.cat([mix, query], dim=2)
-        combined = combined.view(batch_size * n_len, 2 * dimensions)
+        combined = combined.view(n_batch * n_len, 2 * d)
 
-        output = self.linear_out(combined).view(batch_size, n_len, dimensions)
-        output = F.selu(output)
+        output = self.linear_out(combined).view(n_batch, n_len, d)
+        output = F.tanh(output)
 
         return output.t().contiguous(), attention_weights
 
@@ -63,6 +68,7 @@ class SelfAttention(nn.Module):
             context.transpose(1, 2).contiguous()
         ).squeeze(1)
 
+
         attention_weights = F.softmax(attention_scores, dim=-1)
 
         mix = torch.bmm(
@@ -73,7 +79,7 @@ class SelfAttention(nn.Module):
         combined = torch.cat([mix, query], dim=1)
 
         output = self.linear_out(combined)
-        output = F.selu(output)
+        output = F.tanh(output)
 
         return output, attention_weights
 

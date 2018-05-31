@@ -124,3 +124,5 @@ class SamplePlotter:
                  rotation_mode="anchor")
         ax.set_xticklabels(sent)
         ax.set_yticklabels(sent)
+        ax.set_xlabel('generated sequence')
+        ax.set_ylabel('context')
