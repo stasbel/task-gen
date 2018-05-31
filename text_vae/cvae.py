@@ -138,6 +138,7 @@ class RnnVae(nn.Module):
             x_emb = x
 
         # RNN
+        x_emb = F.dropout(x_emb)
         h, _ = self.encoder_rnn(x_emb.t(), None)  # (n_len, n_batch, d_h)
 
         # Forward to latent
@@ -364,7 +365,7 @@ class RnnVae(nn.Module):
         h0 = h0.unsqueeze(2).repeat(1, 1, n_beam, 1).view(1, n, -1)
 
         # Initial values
-        w = torch.tensor(self.bos, device=device).expand(n)  # n
+        w = torch.tensor(self.bos, device=device).repeat(n)  # n
         h = h0.repeat(n_layers, 1, 1)  # (n_layers, n, d_z + d_c)
         # Previous context vectors
         context = torch.empty(
@@ -438,6 +439,180 @@ class RnnVae(nn.Module):
         ua = u.unsqueeze(-1).repeat(1, 1, self.n_len, self.n_len)
         a = a.view(n_batch, -1, self.n_len, self.n_len)
         a = a.gather(1, ua).squeeze(1)
+
+        # Pad
+        if not pad:
+            new_x = []
+            for i in range(x.size(0)):
+                new_x.append(x[i, :end_pads[i]])
+            x = new_x
+
+        # Back to train
+        self.train()
+
+        # Output check
+        assert_check(z, [n_batch, self.d_z], torch.float, device)
+        assert_check(c, [n_batch, self.d_c], torch.float, device)
+        if pad:
+            assert_check(x, [n_batch, self.n_len], torch.long, device)
+        else:
+            assert len(x) == n_batch
+            for i_x in x:
+                assert_check(i_x, [-1], torch.long, device)
+                assert len(i_x) <= self.n_len
+        assert_check(a, [n_batch, self.n_len, self.n_len],
+                     torch.float, device)
+
+        return z, c, x, a
+
+    def perplexity(self, x, use_c_prior=False):
+        """Calculating ppl score for input sequence x
+
+        :param x: (n_batch, n_len) of longs, input sentence x
+        :return: n_batch of floats, ppl scores
+        """
+
+        # Input check
+        assert_check(x, [-1, self.n_len], torch.long)
+
+        # Eval mode
+        self.eval()
+
+        # Encoder: x -> z, kl_loss
+        z, _ = self.forward_encoder(x)
+
+        # Code: x -> c
+        if use_c_prior:
+            c = self.sample_c_prior(x.size(0))
+        else:
+            c = F.softmax(self.forward_discriminator(x), dim=1)
+
+        # Decoder
+        h_init = torch.cat([
+            z.unsqueeze(0),
+            c.unsqueeze(0)
+        ], 2)  # (1, n_batch, d_z + d_c)
+        x_emb = self.x_emb(x.t())  # (n_len, n_batch, d_emb)
+        x_emb = torch.cat([
+            x_emb,
+            h_init.expand(x_emb.shape[0], -1, -1)
+        ], 2)  # (n_len, n_batch, d_emb + d_z + d_c)
+        outputs, _ = self.decoder_rnn(
+            x_emb,
+            h_init.expand(self.decoder_rnn.depth, -1, -1)
+        )  # (n_len, n_batch, d_z + d_c)
+        outputs, _ = self.decoder_a(outputs)
+        n_len, n_batch, _ = outputs.shape  # (n_len, n_batch)
+        y = self.decoder_fc(
+            outputs.view(n_len * n_batch, -1)
+        ).view(n_len, n_batch, -1)  # (n_len, n_batch, n_vocab)
+        y = F.softmax(y, dim=2)
+
+        # Calc ppl
+        y = y[:-1]  # (n_len - 1, n_batch, n_vocab)
+        rx = x.t()[1:].unsqueeze(2)  # (n_len - 1, n_batch, 1)
+        ppl = y.gather(2, rx).squeeze(2)
+        ppl = ppl.t()
+        scores = []
+        for i, xl in enumerate(x):
+            threes = (xl == self.eos).nonzero()
+            m = self.n_len - 1 if not len(threes) else threes.max().item()
+            scores.append(ppl[i, :m].log().sum().exp() ** (-1.0 / (m + 1)))
+        ppl = torch.tensor(scores, device=x.device)
+
+        # Train mode
+        self.train()
+
+        # Output check
+        assert_check(ppl, [x.size(0)], torch.float, x.device)
+
+        return ppl
+
+    def old_sample_sentence(self, n_batch=1, z=None, c=None,
+                            temp=1.0, pad=True):
+        """Generating n_batch sentences in eval mode with values (could be
+        not on same device)
+        :param n_batch: number of sentences to generate
+        :param z: (n_batch, d_z) of floats, latent vector z or None
+        :param c: (n_batch, d_c) of floats, code c or None
+        :param temp: temperature of softmax
+        :param pad: if do padding to n_len
+        :return: tuple of four:
+            1. (n_batch, d_z) of floats, latent vector z
+            2. (n_batch, d_c) of floats, code c
+            3. (n_batch, n_len) of longs if pad and list of n_batch len of
+            tensors of longs: generated sents word ids if not
+            4. (n_batch, n_len, n_len) of floats, attention probs
+        """
+
+        # Input check
+        assert isinstance(n_batch, int) and n_batch > 0
+        if z is not None:
+            assert_check(z, [n_batch, self.d_z], torch.float)
+        if c is not None:
+            assert_check(c, [n_batch, self.d_c], torch.float)
+        assert isinstance(temp, float) and 0 < temp <= 1
+        assert isinstance(pad, bool)
+
+        # Enable eval mode
+        self.eval()
+
+        # Initial values
+        device = self.x_emb.weight.device
+        if z is None:
+            z = self.sample_z_prior(n_batch)  # (n_batch, d_z)
+        if c is None:
+            c = self.sample_c_prior(n_batch)  # (n_batch, d_c)
+        z, c = z.to(device), c.to(device)  # device change
+        z1, c1 = z.unsqueeze(0), c.unsqueeze(0)  # +1
+        n_layers = self.decoder_rnn.depth
+        h = torch.cat(
+            [z1, c1], dim=2
+        ).expand(n_layers, -1, -1)  # (n_layers, n_batch, d_z + d_c)
+        w = torch.tensor(self.bos, device=device).expand(n_batch)  # n_batch
+        x = torch.tensor(
+            [self.pad], device=device
+        ).repeat(n_batch, self.n_len)
+        x[:, 0] = self.bos
+        end_pads = torch.tensor(
+            [self.n_len], device=device
+        ).repeat(n_batch)
+        eos_mask = torch.zeros(n_batch, dtype=torch.uint8, device=device)
+        context = torch.empty(
+            n_batch, self.n_len - 1, self.d_z + self.d_c,
+            device=device
+        )
+        a = torch.zeros(
+            n_batch, self.n_len, self.n_len,
+            device=device
+        )
+
+        # Cycle, word by word
+        for i in range(1, self.n_len):
+            # Init
+            x_emb = self.x_emb(w).expand(
+                n_layers, -1, -1
+            )  # (n_layers, n_batch, d_emb)
+            x_emb = torch.cat(
+                [x_emb, z1, c1], 2
+            )  # (n_layers, n_batch, d_emb + d_z + d_c)
+
+            # Step
+            o, h = self.decoder_rnn(x_emb, h)  # (1, n_batch, d_z + d_c)
+            context[:, i - 1, :] = o.t()
+            o, aw = self.decoder_a.forward_inference(
+                o.squeeze(0), context[:, :i, :]
+            )
+            a[~eos_mask, i, :i] = aw[~eos_mask]
+            y = self.decoder_fc(o)
+            y = F.softmax(y / temp, dim=1)
+
+            # Generating
+            w = torch.multinomial(y, 1)[:, 0]
+            x[~eos_mask, i] = w[~eos_mask]
+            i_eos_mask = (w == self.eos)
+            end_pads[i_eos_mask] = i
+            eos_mask = eos_mask | i_eos_mask
 
         # Pad
         if not pad:
