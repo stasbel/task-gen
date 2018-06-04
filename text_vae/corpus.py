@@ -28,7 +28,7 @@ class Corpus(abc.ABC):
         pass
 
     @abc.abstractmethod
-    def reverse(self, example, name):
+    def reverse(self, example, name='x'):
         """Reverse given example to human-readable form"""
         pass
 

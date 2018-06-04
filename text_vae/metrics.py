@@ -28,15 +28,10 @@ class Evaluator:
         for mode in ('train', 'val', 'test'):
             self._get_reference(mode)
 
-    def bleu(self, model, n_hypot, mode):
+    def bleu(self, model, n_hypot, split):
         """Calculating similarity metric, higher is better"""
-        references = self._get_reference(mode)
-        hypotheses = [
-            word_tokenize(sent)
-            for sent in self.corpus.reverse(
-                model.sample_sentence(n_hypot, **self.sample_params)[2]
-            )
-        ]
+        references = self._get_reference(split)
+        hypotheses = self._get_hypotheses(model, n_hypot)
 
         result = {}
         for i, w in self.blue_weights:
@@ -47,14 +42,13 @@ class Evaluator:
             ])
         return result
 
-    def self_bleu(self, model, n_hypot):
+    def self_bleu(self, model=None, n_hypot=None, split=None):
         """Calculating diversity metric, lower is better"""
-        hypotheses = [
-            word_tokenize(sent)
-            for sent in self.corpus.reverse(
-                model.sample_sentence(n_hypot, **self.sample_params)[2]
-            )
-        ]
+
+        if model is not None and n_hypot is not None:
+            hypotheses = self._get_hypotheses(model, n_hypot or self.n_ref)
+        else:
+            hypotheses = self._get_reference(split)
 
         result = {}
         for i, w in self.blue_weights:
@@ -77,11 +71,23 @@ class Evaluator:
     def _get_reference(self, split):
         batcher = self.corpus.batcher(split, 'unlabeled',
                                       n_batch=1, device=torch.device('cpu'))
+
+        vocab = self.corpus.vocab('x')
         result = []
-        for b in batcher:
+        for x in batcher:
             if len(result) == self.n_ref:
                 break
 
-            result.append(word_tokenize(self.corpus.reverse(b, 'x')[0]))
+            result.append([vocab.itos[i] for i in x[0]
+                           if i != vocab.stoi['<pad>']])
 
         return result
+
+    def _get_hypotheses(self, model, n_hypot):
+        vocab = self.corpus.vocab('x')
+        hypotheses = [
+            [vocab.itos[i] for i in sent if i != vocab.stoi['<pad>']]
+            for sent in model.sample_sentence(n_hypot,
+                                              **self.sample_params)[2]
+        ]
+        return hypotheses
